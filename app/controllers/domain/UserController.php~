@@ -1,0 +1,194 @@
+<?php
+
+use App\Services\Validators\LoginValidator;
+use App\Services\Validators\ResetValidator;
+use App\Services\Validators\RequestValidator;
+
+class DomainUserController extends Controller
+{
+	public function getLoginAction()
+	{
+		//$test = Sentry::getCookie();
+		return View::make("domain/login/login");
+	}
+	public function postLoginAction()
+	{
+
+		$remember = (bool)\Input::get("remember", false);
+		$validation = new LoginValidator;
+		
+		if($validation->passes())
+		{
+			$credentials = $validation->getLoginCredentials();
+
+			try
+			{
+				$user = Sentry::authenticate($credentials, $remember);
+				
+				if ($user) {
+					return Redirect::route("user/profile");
+				}
+			}
+			catch(\Exception $e)
+			{
+				return Redirect::action('DomainUserController@getLoginAction')
+				->withErrors([
+					"password" => ["Credentials invalid."]
+				]);
+				// for more information
+                // ->withErrors(array('login' => $e->getMessage()));
+			}
+
+		}
+		else 
+		{
+
+			return Redirect::action('DomainUserController@getLoginAction')
+			->withInput()
+			->withErrors($validation->getErrors());
+
+		}
+
+	}
+
+	public function getRequestAction()
+	{
+		return View::make("domain/login/request");
+	}
+	public function postRequestAction()
+	{
+
+		$validation = new RequestValidator;
+
+		if($validation->passes())
+		{
+			$email = $validation->getEmailAddress();
+			try
+			{
+    			// Find the user using the user email address
+				$user = Sentry::findUserByLogin($email);
+
+    			// Get the password reset code
+				$resetCode = $user->getResetPasswordCode();
+				$data = array(
+					//"id" => $user->id,
+					"resetCode" => $resetCode
+				);
+
+				// Now I can send this code to my user via email.
+				Mail::queue('emails.resetPassword', $data, function($message)
+				{
+					$message->from('noreplay@mlab.com', 'Reset Password');
+					$message->to(Input::get('email'));
+					$message->subject('Reset Password!');
+				});
+
+				return Redirect::route("user/login");
+    
+			}
+			catch (Cartalyst\Sentry\Users\UserNotFoundException $e)
+			{
+				//echo 'User was not found.';
+				return Redirect::action('DomainUserController@getRequestAction')
+				->withInput()
+				->with("error", "user not found");
+			}
+				
+		}
+		else
+		{
+			return Redirect::action('DomainUserController@getRequestAction',[$sub])
+				->withInput()
+				->withErrors($validation->getErrors());
+		}
+		
+	}
+
+	public function getResetAction($resetCode = null)
+	{
+
+		if (is_null($resetCode))
+		{
+			return Redirect::action('DomainUserController@getLoginAction');
+			//App::abort(404);
+		} 
+
+		try
+		{
+		    $user = Sentry::findUserByResetPasswordCode($resetCode);
+		}
+		catch (Cartalyst\Sentry\Users\UserNotFoundException $e)
+		{
+			return Redirect::action('DomainUserController@getRequestAction')
+				->withInput()
+				->with("error", 'User was not found');
+		}
+		
+		return View::make("domain/login/reset")->with('resetCode', $resetCode);
+	}
+
+	public function postResetAction($resetCode = null)
+	{
+
+		$validation = new ResetValidator;
+
+		if($validation->passes())
+		{
+			$credentials = $validation->getResetCredentials();
+
+			try
+			{
+				$user = Sentry::findUserByLogin($credentials['email']);
+
+				if ($user->checkResetPasswordCode($credentials['resetCode']))
+				{
+	        		// Attempt to reset the user password
+					if ($user->attemptResetPassword($credentials['resetCode'], $credentials['password']))
+					{
+						return Redirect::action('DomainUserController@getLoginAction');
+						//return Redirect::route("user/profile");
+					}
+					else
+					{
+						return Redirect::to(URL::route("user/reset") . $credentials['resetCode'])
+						->withInput()
+						->with("error", "Reset password failed");
+					}
+				}
+				else
+				{
+					return Redirect::action('DomainUserController@getRequestAction')
+					->withInput()
+					->with("error", "The provided password reset code is Invalid");
+				}
+			}
+			catch (Cartalyst\Sentry\Users\UserNotFoundException $e)
+			{
+				return Redirect::action('DomainUserController@getRequestAction')
+				->withInput()
+				->with("error", 'user not found');
+			}
+		}
+		else
+		{
+
+			return Redirect::to(URL::route("user/reset") . $resetCode)
+				->withInput()
+				->withErrors($validation->getErrors());
+		}
+
+	}
+
+	public function profileAction()
+	{
+		return View::make("domain/admin/profile");
+	}
+
+	public function logoutAction()
+	{
+		Sentry::logout();
+
+		return Redirect::route("user/login");
+	}
+	
+}
